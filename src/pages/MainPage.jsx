@@ -1,24 +1,24 @@
 import React, { useState } from "react";
 import meetingImg from "../assets/Meeting3.png";
-import { useNavigate } from "react-router-dom"; // Updated import
+import { useNavigate } from "react-router-dom";
 import { db } from "../../firebase";
 import { collection, addDoc, getDoc, doc } from "firebase/firestore";
 
 function MainPage() {
   const [meetingCode, setMeetingCode] = useState("");
-  const navigate = useNavigate(); // Updated hook
+  const navigate = useNavigate();
 
   const createMeeting = async () => {
     const meetingRef = await addDoc(collection(db, "meetings"), {
       createdAt: new Date(),
     });
-    navigate(`/meeting/${meetingRef.id}`); // Updated navigation
+    navigate(`/meeting/${meetingRef.id}`);
   };
 
   const joinMeeting = async () => {
     const meetingDoc = await getDoc(doc(db, "meetings", meetingCode));
     if (meetingDoc.exists()) {
-      navigate(`/meeting/${meetingCode}`); // Updated navigation
+      navigate(`/meeting/${meetingCode}`);
     } else {
       alert("Meeting code does not exist!");
     }
