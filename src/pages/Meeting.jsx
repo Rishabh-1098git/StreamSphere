@@ -1,125 +1,145 @@
-// src/pages/Meeting.js
 import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import Peer from "simple-peer";
 import { db } from "../../firebase";
 import {
+  collection,
   doc,
   onSnapshot,
-  collection,
+  setDoc,
+  getDoc,
   addDoc,
-  deleteDoc,
+  updateDoc,
 } from "firebase/firestore";
-import { useAuthState } from "react-firebase-hooks/auth";
-import { auth } from "../../firebase";
-function Meeting() {
+import SimplePeer from "simple-peer";
+
+const Meeting = () => {
   const { meetingId } = useParams();
-  const { currentUser } = useAuthState(auth);
-  const [stream, setStream] = useState(null);
-  const [peers, setPeers] = useState([]);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const myVideo = useRef();
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState([]);
   const peersRef = useRef([]);
+  const userVideo = useRef();
+  const remoteVideoRefs = useRef([]);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    const meetingRef = doc(db, "meetings", meetingId);
-    onSnapshot(meetingRef, (doc) => {
-      if (doc.exists() && doc.data().admin === currentUser.uid) {
-        setIsAdmin(true);
-      }
-    });
-
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        setStream(stream);
-        myVideo.current.srcObject = stream;
-
-        const callRef = collection(db, "calls");
-        onSnapshot(callRef, (snapshot) => {
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === "added") {
-              const peer = new Peer({
-                initiator: false,
-                trickle: false,
-                stream,
-              });
-              peer.on("signal", (data) => {
-                addDoc(callRef, {
-                  meetingId,
-                  signal: data,
-                });
-              });
-
-              peer.on("stream", (userStream) => {
-                setPeers((peers) => [
-                  ...peers,
-                  { id: change.doc.id, stream: userStream },
-                ]);
-              });
-
-              peer.signal(change.doc.data().signal);
-              peersRef.current.push({ id: change.doc.id, peer });
-            }
-          });
+    const init = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
         });
+        setLocalStream(stream);
+        if (userVideo.current) {
+          userVideo.current.srcObject = stream;
+        }
+
+        const meetingDoc = await getDoc(doc(db, "meetings", meetingId));
+        if (!meetingDoc.exists()) {
+          await setDoc(doc(db, "meetings", meetingId), {
+            createdAt: new Date(),
+          });
+          setIsAdmin(true);
+        }
+
+        const unsubscribe = onSnapshot(
+          collection(db, "meetings", meetingId, "peers"),
+          (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === "added") {
+                const peerData = change.doc.data();
+                const peer = new SimplePeer({
+                  initiator: peerData.initiator,
+                  trickle: false,
+                  stream,
+                });
+
+                peer.on("signal", (signal) => {
+                  console.log(
+                    `Signaling data for ${
+                      peerData.initiator ? "initiator" : "receiver"
+                    }:`,
+                    signal
+                  );
+                  if (peerData.initiator) {
+                    updateDoc(
+                      doc(db, "meetings", meetingId, "peers", change.doc.id),
+                      {
+                        signalData: signal,
+                      }
+                    );
+                  } else {
+                    setDoc(
+                      doc(db, "meetings", meetingId, "peers", change.doc.id),
+                      {
+                        signalData: signal,
+                      }
+                    );
+                  }
+                });
+
+                peer.on("stream", (remoteStream) => {
+                  console.log("Received remote stream:", remoteStream);
+                  setRemoteStreams((prevStreams) => [
+                    ...prevStreams,
+                    remoteStream,
+                  ]);
+                });
+
+                console.log("Signaling peer with data:", peerData.signalData);
+                peer.signal(peerData.signalData);
+                peersRef.current.push({ peerID: change.doc.id, peer });
+              }
+            });
+          }
+        );
+
+        return () => unsubscribe();
+      } catch (error) {
+        console.error("Error initializing stream or Firestore:", error);
+      }
+    };
+
+    init();
+  }, [meetingId]);
+
+  const addPeer = async () => {
+    try {
+      await addDoc(collection(db, "meetings", meetingId, "peers"), {
+        initiator: isAdmin,
+        signalData: null,
       });
-  }, [meetingId, currentUser]);
-
-  const createPeer = async () => {
-    const peer = new Peer({ initiator: true, trickle: false, stream });
-    const callRef = collection(db, "calls");
-    peer.on("signal", (data) => {
-      addDoc(callRef, {
-        meetingId,
-        signal: data,
-      });
-    });
-
-    peer.on("stream", (userStream) => {
-      setPeers((peers) => [...peers, { id: peer.id, stream: userStream }]);
-    });
-
-    peersRef.current.push({ id: peer.id, peer });
-  };
-
-  const removePeer = async (peerId) => {
-    const peerToRemove = peersRef.current.find((p) => p.id === peerId);
-    if (peerToRemove) {
-      peerToRemove.peer.destroy();
-      await deleteDoc(doc(db, "calls", peerId));
-      setPeers(peers.filter((p) => p.id !== peerId));
+    } catch (error) {
+      console.error("Error adding peer to Firestore:", error);
     }
   };
 
+  useEffect(() => {
+    if (isAdmin) {
+      addPeer();
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    remoteStreams.forEach((stream, index) => {
+      if (remoteVideoRefs.current[index]) {
+        remoteVideoRefs.current[index].srcObject = stream;
+      }
+    });
+  }, [remoteStreams]);
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen">
-      <div className="flex">
-        <video playsInline muted ref={myVideo} autoPlay className="w-1/2" />
-        {peers.map((peer, index) => (
-          <div key={index} className="relative">
-            <video
-              playsInline
-              ref={(ref) => ref && (ref.srcObject = peer.stream)}
-              autoPlay
-              className="w-1/2"
-            />
-            {isAdmin && (
-              <button
-                onClick={() => removePeer(peer.id)}
-                className="absolute top-0 right-0 bg-red-600 text-white p-2"
-              >
-                Remove
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-      <button onClick={createPeer} className="btn btn-primary mt-4">
-        Add Participant
-      </button>
+    <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-blue-50 to-purple-100">
+      <video ref={userVideo} autoPlay muted className="w-1/2" />
+      {remoteStreams.map((stream, index) => (
+        <video
+          key={index}
+          ref={(el) => (remoteVideoRefs.current[index] = el)}
+          autoPlay
+          className="w-1/2"
+        />
+      ))}
     </div>
   );
-}
+};
 
 export default Meeting;
